@@ -22,15 +22,15 @@ async function getFile(path) {
     } catch (e) { return { content: [], sha: null }; }
 }
 
-// [기능 1] 전체 데이터 조회
+// [1] 전체 데이터 조회
 app.get('/api/data', async (req, res) => {
     const { content } = await getFile('data/posts.json');
     res.json(content);
 });
 
-// [기능 2] 게시글 업로드 (작성자 ID 포함)
+// [2] 업로드 (태그 포함 수정본)
 app.post('/api/upload', async (req, res) => {
-    const { title, text, imageBase64, fileName, authorId } = req.body;
+    const { title, text, tag, imageBase64, fileName, authorId } = req.body;
     const postId = Date.now().toString();
 
     try {
@@ -46,20 +46,32 @@ app.post('/api/upload', async (req, res) => {
         }
 
         const { content: currentData, sha } = await getFile('data/posts.json');
-        const newData = { id: postId, authorId, title, text, imageUrl, comments: [], date: new Date().toLocaleString() };
+        
+        // 태그(#)가 없으면 기본값 #전체 로 저장
+        const newData = { 
+            id: postId, 
+            authorId, 
+            title, 
+            text, 
+            tag: tag || "#전체", 
+            imageUrl, 
+            comments: [], 
+            date: new Date().toLocaleString() 
+        };
+        
         currentData.unshift(newData);
 
         await octokit.repos.createOrUpdateFileContents({
             owner: OWNER, repo: REPO, path: 'data/posts.json',
-            message: `Post by ${authorId}`,
+            message: `Post by ${authorId} with tag ${tag}`,
             content: Buffer.from(JSON.stringify(currentData, null, 2)).toString('base64'),
             sha: sha
         });
-        res.json({ success: true });
+        res.json({ success: true, data: newData });
     } catch (error) { res.status(500).json({ error: "저장 실패" }); }
 });
 
-// [기능 3] 댓글 작성
+// [3] 댓글 작성 (기존과 동일)
 app.post('/api/comment', async (req, res) => {
     const { postId, authorId, text } = req.body;
     try {
@@ -79,7 +91,7 @@ app.post('/api/comment', async (req, res) => {
     } catch (error) { res.status(500).send("Error"); }
 });
 
-// [기능 4] 게시글 삭제
+// [4] 삭제 (기존과 동일)
 app.delete('/api/post/:id', async (req, res) => {
     const postId = req.params.id;
     try {
