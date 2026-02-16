@@ -8,7 +8,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.json({ limit: '50mb' })); // 이미지 용량을 위해 50mb로 확장
 
 const OWNER = 'sjwow2039'; 
 const REPO = 'eL-database';
@@ -28,7 +28,7 @@ app.get('/api/data', async (req, res) => {
     res.json(content);
 });
 
-// [2] 업로드 (태그 포함 수정본)
+// [2] 업로드 (이미지 CDN 주소 생성 및 태그 처리)
 app.post('/api/upload', async (req, res) => {
     const { title, text, tag, imageBase64, fileName, authorId } = req.body;
     const postId = Date.now().toString();
@@ -36,7 +36,7 @@ app.post('/api/upload', async (req, res) => {
     try {
         let imageUrl = "";
         if (imageBase64) {
-            const imagePath = `data/images/${postId}_${fileName}`;
+            const imagePath = `data/images/${postId}_${fileName || 'image.png'}`;
             await octokit.repos.createOrUpdateFileContents({
                 owner: OWNER, repo: REPO, path: imagePath,
                 message: `Upload image by ${authorId}`,
@@ -47,31 +47,33 @@ app.post('/api/upload', async (req, res) => {
 
         const { content: currentData, sha } = await getFile('data/posts.json');
         
-        // 태그(#)가 없으면 기본값 #전체 로 저장
         const newData = { 
             id: postId, 
-            authorId, 
+            authorId: authorId || "익명", 
             title, 
             text, 
             tag: tag || "#전체", 
             imageUrl, 
             comments: [], 
-            date: new Date().toLocaleString() 
+            date: new Date().toLocaleDateString() 
         };
         
         currentData.unshift(newData);
 
         await octokit.repos.createOrUpdateFileContents({
             owner: OWNER, repo: REPO, path: 'data/posts.json',
-            message: `Post by ${authorId} with tag ${tag}`,
+            message: `Post by ${authorId}`,
             content: Buffer.from(JSON.stringify(currentData, null, 2)).toString('base64'),
             sha: sha
         });
         res.json({ success: true, data: newData });
-    } catch (error) { res.status(500).json({ error: "저장 실패" }); }
+    } catch (error) { 
+        console.error(error);
+        res.status(500).json({ error: "저장 실패" }); 
+    }
 });
 
-// [3] 댓글 작성 (기존과 동일)
+// [3] 댓글 작성
 app.post('/api/comment', async (req, res) => {
     const { postId, authorId, text } = req.body;
     try {
@@ -79,7 +81,12 @@ app.post('/api/comment', async (req, res) => {
         const postIndex = currentData.findIndex(p => p.id === postId);
         if (postIndex === -1) return res.status(404).send("Post not found");
 
-        currentData[postIndex].comments.push({ id: Date.now(), authorId, text, date: new Date().toLocaleString() });
+        currentData[postIndex].comments.push({ 
+            id: Date.now(), 
+            authorId: authorId || "익명", 
+            text, 
+            date: new Date().toLocaleString() 
+        });
 
         await octokit.repos.createOrUpdateFileContents({
             owner: OWNER, repo: REPO, path: 'data/posts.json',
@@ -91,30 +98,46 @@ app.post('/api/comment', async (req, res) => {
     } catch (error) { res.status(500).send("Error"); }
 });
 
-// [4] 삭제 (기존과 동일)
-app.delete('/api/post/:id', async (req, res) => {
-    const postId = req.params.id;
+// [4] 삭제 (본인 확인 로직 강화 + 이미지 동시 삭제)
+app.post('/api/delete', async (req, res) => {
+    const { id, authorId } = req.body; // app.js에서 보내는 데이터
     try {
         const { content: currentData, sha } = await getFile('data/posts.json');
-        const post = currentData.find(p => p.id === postId);
+        const post = currentData.find(p => p.id === id);
         
-        if (post && post.imageUrl) {
+        if (!post) return res.status(404).json({ success: false, message: "글을 찾을 수 없습니다." });
+
+        // 보안: 작성자 본인 확인
+        if (post.authorId !== authorId) {
+            return res.status(403).json({ success: false, message: "본인 글만 삭제 가능합니다." });
+        }
+
+        // 이미지 있으면 GitHub에서 이미지도 삭제
+        if (post.imageUrl) {
             try {
                 const imagePath = post.imageUrl.split('@main/')[1];
                 const { data: imgData } = await octokit.repos.getContent({ owner: OWNER, repo: REPO, path: imagePath });
-                await octokit.repos.deleteFile({ owner: OWNER, repo: REPO, path: imagePath, message: "Del img", sha: imgData.sha });
-            } catch (e) {}
+                await octokit.repos.deleteFile({ 
+                    owner: OWNER, repo: REPO, path: imagePath, 
+                    message: "Delete image", 
+                    sha: imgData.sha 
+                });
+            } catch (e) { console.log("Image delete failed or already gone"); }
         }
 
-        const filtered = currentData.filter(p => p.id !== postId);
+        // JSON 데이터에서 삭제
+        const filtered = currentData.filter(p => p.id !== id);
         await octokit.repos.createOrUpdateFileContents({
             owner: OWNER, repo: REPO, path: 'data/posts.json',
-            message: `Delete ${postId}`,
+            message: `Delete post ${id} by ${authorId}`,
             content: Buffer.from(JSON.stringify(filtered, null, 2)).toString('base64'),
             sha: sha
         });
         res.json({ success: true });
-    } catch (error) { res.status(500).send("Error"); }
+    } catch (error) { 
+        console.error(error);
+        res.status(500).json({ success: false, message: "서버 삭제 에러" }); 
+    }
 });
 
 app.listen(port, () => console.log(`Server running on ${port}`));
